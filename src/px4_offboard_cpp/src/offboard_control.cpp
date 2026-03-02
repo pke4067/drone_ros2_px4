@@ -24,15 +24,15 @@ public:
             
             // 2. 시간에 따라 목적지(Setpoint) 바꾸기 (5초마다 변경)
             // 10Hz이므로 counter 50마다 5초가 지남
-            if (counter_ < 100) { // 0~10초: 제자리 이륙 (고도 10m)
+            if (counter_ < 150) { // 0~15초: 제자리 이륙 (고도 10m)
                 publish_trajectory_setpoint(0.0, 0.0, -10.0);
-            } else if (counter_ < 150) { // 10~15초: 앞으로 100m 이동
+            } else if (counter_ < 400) { // 15~40초: 앞으로 100m 이동
                 publish_trajectory_setpoint(100.0, 0.0, -10.0);
-            } else if (counter_ < 200) { // 15~20초: 오른쪽으로 100m 이동
+            } else if (counter_ < 600) { // 40~60초: 오른쪽으로 100m 이동
                 publish_trajectory_setpoint(100.0, 100.0, -10.0);
-            } else if (counter_ < 250) { // 20~25초: 뒤로 100m 이동
+            } else if (counter_ < 800) { // 60~80초: 뒤로 100m 이동
                 publish_trajectory_setpoint(0.0, 100.0, -10.0);
-            } else { // 25초 이후: 처음 위치로 복귀
+            } else { // 80초 이후: 처음 위치로 복귀
                 publish_trajectory_setpoint(0.0, 0.0, -10.0);
             }
 
