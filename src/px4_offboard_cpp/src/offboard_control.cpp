@@ -1,11 +1,11 @@
 /*
 # 소스코드 이름 : offboard_control.cpp
-# 버전 : v1.4.2(date_20260312)
+# 버전 : v1.5.0(date_20260312)
 # 주요 수정 사항 로그
-1. 반지름 50m에 최적화된 각속도 적용 (속도 약 5m/s 유지)
-2. Yaw(머리 방향) 제어 로직 추가: 드론이 원의 접선 방향을 바라보며 비행
-3. publish_trajectory_setpoint 함수에 Yaw 인자 통합
-4. 도착 판단 범위(is_arrived) 최적화
+1. 하트 모양 비행(Heart Shape Flight) 알고리즘 구현
+2. 하트 매개변수 방정식(Parametric Heart Equation) 적용
+3. 곡선 경로에 따른 실시간 Yaw(머리 방향) 제어 통합
+4. 비행 스케일(Scale) 조정을 통한 하트 크기 최적화
 */
 
 #include <px4_msgs/msg/offboard_control_mode.hpp>
@@ -18,9 +18,9 @@
 
 using namespace std::chrono_literals;
 
-class SmartCircleFlight : public rclcpp::Node {
+class SmartHeartFlight : public rclcpp::Node {
 public:
-    SmartCircleFlight() : Node("smart_circle_flight") {
+    SmartHeartFlight() : Node("smart_heart_flight") {
         rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
         auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, qos_profile.depth), qos_profile);
 
@@ -59,31 +59,38 @@ public:
             publish_offboard_control_mode();
 
             float target_x = 0.0, target_y = 0.0, target_z = -10.0, target_yaw = 0.0;
-            const float radius = 50.0; // 반지름 50m
+            const float scale = 2.5; // 하트 크기 조절 (값이 클수록 큰 하트)
 
             if (state_ == 0) { // 1단계: 이륙
                 target_x = 0.0; target_y = 0.0; target_z = -10.0;
                 if (is_arrived(target_x, target_y, target_z)) state_ = 1;
             } 
-            else if (state_ == 1) { // 2단계: 시작점 이동
-                target_x = radius; target_y = 0.0; target_z = -10.0;
-                target_yaw = M_PI / 2.0; // 동쪽(East)을 바라보며 대기
-                if (is_arrived(target_x, target_y, target_z)) state_ = 2;
+            else if (state_ == 1) { // 2단계: 하트 시작점으로 이동 (t=0 지점)
+                // t=0일 때 하트 공식의 값: X = scale * 5, Y = 0
+                target_x = scale * 5.0; target_y = 0.0; target_z = -10.0;
+                if (is_arrived(target_x, target_y, target_z)) {
+                    state_ = 2;
+                    RCLCPP_INFO(this->get_logger(), ">> 하트 비행을 시작합니다!");
+                }
             } 
-            else if (state_ == 2) { // 3단계: 원형 비행 (Yaw 제어 포함)
-                // 속도 5m/s 유지를 위해 0.01 증분 사용
-                theta_ += 0.01; 
+            else if (state_ == 2) { // 3단계: 하트 그리기 실행
+                theta_ += 0.02; // 부드러운 곡선을 위해 증분값 조정
                 
-                target_x = radius * std::cos(theta_);
-                target_y = radius * std::sin(theta_);
+                // 하트 공식 적용 (매개변수 t = theta_)
+                float x_val = 13 * std::cos(theta_) - 5 * std::cos(2 * theta_) - 2 * std::cos(3 * theta_) - std::cos(4 * theta_);
+                float y_val = 16 * std::pow(std::sin(theta_), 3);
+
+                target_x = scale * x_val;
+                target_y = scale * y_val;
                 target_z = -10.0;
-                
-                // 드론의 머리를 현재 각도(theta_)에서 90도(PI/2) 더한 방향으로 고정
-                target_yaw = theta_ + M_PI / 2.0; 
+
+                // [Yaw 제어] 현재 위치와 다음 목표 사이의 각도를 계산하여 머리 방향을 맞춤
+                // 간단하게는 theta_를 활용하여 접선 방향을 추정할 수 있습니다.
+                target_yaw = std::atan2(target_y - current_y_, target_x - current_x_);
 
                 if (theta_ >= 2 * M_PI) {
                     state_ = 3;
-                    RCLCPP_INFO(this->get_logger(), ">> 원형 비행 완료!");
+                    RCLCPP_INFO(this->get_logger(), ">> 하트 비행 완료! 복귀합니다.");
                 }
             } 
             else if (state_ == 3) { // 4단계: 복귀 및 착륙
@@ -106,7 +113,7 @@ public:
 private:
     bool is_arrived(float tx, float ty, float tz) {
         float distance = std::sqrt(std::pow(tx - current_x_, 2) + std::pow(ty - current_y_, 2) + std::pow(tz - current_z_, 2));
-        return distance < 3.0; // 50m 원형 비행을 위해 도착 범위를 3m로 여유있게 설정
+        return distance < 2.0;
     }
 
     void publish_offboard_control_mode() {
@@ -116,11 +123,10 @@ private:
         offboard_control_mode_pub_->publish(msg);
     }
 
-    // [수정] Yaw 값이 포함된 궤적 명령 전송
     void publish_trajectory_setpoint(float x, float y, float z, float yaw) {
         px4_msgs::msg::TrajectorySetpoint msg{};
         msg.position = {x, y, z};
-        msg.yaw = yaw; // 라디안 단위 방향 제어
+        msg.yaw = yaw;
         msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
         trajectory_setpoint_pub_->publish(msg);
     }
@@ -150,7 +156,7 @@ private:
 
 int main(int argc, char *argv[]) {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<SmartCircleFlight>());
+    rclcpp::spin(std::make_shared<SmartHeartFlight>());
     rclcpp::shutdown();
     return 0;
 }
