@@ -1,11 +1,12 @@
 /*
 # 소스코드 이름 : offboard_control.cpp
-# 버전 : v2.4.0 (2026-03-21)
+# 버전 : v2.4.1 (2026-03-21)
 # 주요 업데이트: 회피 후 목표 거리 도달 시 자동 착륙 기능 추가
 # 목표: 
 # 1. 이륙 후 X=60 지점의 기둥 조준 (사용자 v2.3.1 로직 유지)
 # 2. 20m 전방 감지 시 10m 회피
 # 3. Y축 기준 100m 도달 시 자동 착륙 명령 실행
+# 4. 속도 0.6 -> 1.0으로 변경(v2.4.1)
 */
 
 #include <px4_msgs/msg/offboard_control_mode.hpp>
@@ -88,7 +89,7 @@ public:
 
                 case FORWARD:
                     target_x = 0.0; 
-                    target_y = current_y_ + 0.6; // 사용자님의 v2.3.1 속도
+                    target_y = current_y_ + 1.0; // 속도 변경(0.6 -> 1.0)
                     
                     if (dist_front_ < 20.0f) { 
                         state_ = AVOID; 
