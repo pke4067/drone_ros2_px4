@@ -1,10 +1,11 @@
 /*
 # 소스코드 이름 : offboard_control.cpp
-# 버전 : v2.3.1 (2026-03-21)
-# 주요 해결 과제
-1. 저속 비행: 초속 약 0.6m로 천천히 이동하여 드론이 고개를 숙이지 않게 함 (센서 시야 확보).
-2. 감지 로직 강화: 모든 각도(0~72개 인덱스)를 다 검사해서 기둥을 놓치지 않게 함.
-3. 조기 회피: 기둥이 20m 거리(기존 15m)에 들어오면 즉시 10m 옆으로 회피 시작.
+# 버전 : v2.4.0 (2026-03-21)
+# 주요 업데이트: 회피 후 목표 거리 도달 시 자동 착륙 기능 추가
+# 목표: 
+# 1. 이륙 후 X=60 지점의 기둥 조준 (사용자 v2.3.1 로직 유지)
+# 2. 20m 전방 감지 시 10m 회피
+# 3. Y축 기준 100m 도달 시 자동 착륙 명령 실행
 */
 
 #include <px4_msgs/msg/offboard_control_mode.hpp>
@@ -18,7 +19,8 @@
 
 using namespace std::chrono_literals;
 
-enum FlightState { TAKEOFF, FORWARD, AVOID, GOAL };
+// 착륙(LAND) 상태를 추가했습니다!
+enum FlightState { TAKEOFF, FORWARD, AVOID, GOAL, LAND };
 
 class SmartSensorFlight : public rclcpp::Node {
 public:
@@ -47,7 +49,6 @@ public:
             [this](const px4_msgs::msg::ObstacleDistance::SharedPtr msg) {
                 float min_val = 655.35f; 
                 bool found = false;
-                // 전 영역(0~72개 레이저)을 다 검사해서 기둥을 절대 놓치지 않게 합니다.
                 for (auto d : msg->distances) {
                     float dist = (float)d / 100.0f;
                     if (dist > 0.1f && dist < min_val) {
@@ -57,7 +58,6 @@ public:
                 }
                 if (found) { 
                     this->dist_front_ = min_val; 
-                    // 기둥이 센서 시야(30m)에 들어오는 순간부터 빨간 로그를 찍습니다.
                     if (min_val < 29.0f && state_ == FORWARD) {
                         RCLCPP_ERROR(this->get_logger(), "!!! [기둥 포착] 거리: %.2f m", min_val);
                     }
@@ -72,7 +72,10 @@ public:
                 this->arm();
             }
 
-            publish_offboard_control_mode();
+            // 착륙 상태가 아닐 때만 Offboard 모드를 유지합니다.
+            if (state_ != LAND) {
+                publish_offboard_control_mode();
+            }
 
             float target_yaw = initial_yaw_; 
             float target_x = 0.0, target_y = 0.0, target_z = -10.0;
@@ -84,14 +87,12 @@ public:
                     break;
 
                 case FORWARD:
-                    // [중요] target_y를 아주 조금씩만 늘려서 드론이 수평을 유지하며 전진하게 합니다.
                     target_x = 0.0; 
-                    target_y = current_y_ + 0.6; // 초속 약 6m로 가는 명령(기존 2에서 6으로 바꿈)
+                    target_y = current_y_ + 0.6; // 사용자님의 v2.3.1 속도
                     
-                    // 기둥이 20m 거리로 들어오면 회피 시작
                     if (dist_front_ < 20.0f) { 
                         state_ = AVOID; 
-                        avoid_target_x_ = current_x_ - 10.0; // 오른쪽으로 10m 회피
+                        avoid_target_x_ = current_x_ - 10.0; 
                         stop_y_ = current_y_;
                         RCLCPP_WARN(this->get_logger(), ">> 장애물 발견! 20m 전방에서 10m 회피 실시");
                     }
@@ -105,11 +106,24 @@ public:
 
                 case GOAL:
                     target_x = avoid_target_x_; 
-                    target_y = 100.0; 
+                    target_y = 100.0; // 100m 지점까지 갑니다.
+                    
+                    // 목표 거리인 100m에 거의 다 왔다면 착륙 상태로 변경!
+                    if (current_y_ >= 95.0f) {
+                        state_ = LAND;
+                        RCLCPP_INFO(this->get_logger(), "▶ [목표 도달] 자동 착륙을 시작합니다.");
+                    }
+                    break;
+
+                case LAND:
+                    // PX4에게 착륙 명령을 한 번 던집니다.
+                    this->publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_NAV_LAND);
                     break;
             }
 
-            publish_trajectory_setpoint(target_x, target_y, target_z, target_yaw);
+            if (state_ != LAND) {
+                publish_trajectory_setpoint(target_x, target_y, target_z, target_yaw);
+            }
             init_counter_++;
         };
         timer_ = this->create_wall_timer(100ms, timer_callback);
@@ -118,6 +132,7 @@ public:
     void arm() { publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0); }
 
 private:
+    // ... 이하 publish 함수들은 v2.3.1과 동일합니다 ...
     void publish_offboard_control_mode() {
         px4_msgs::msg::OffboardControlMode msg{};
         msg.position = true;
